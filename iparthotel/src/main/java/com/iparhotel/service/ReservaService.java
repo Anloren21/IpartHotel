@@ -20,42 +20,58 @@ public class ReservaService {
 	private final HabitacionRepository habitacionRepository;
 	private final UsuarioRepository usuarioRepository;
 
+	// VALIDACIONES
+
 	private void validarFechas(LocalDate entrada, LocalDate salida) {
 
 		if (entrada == null || salida == null || !salida.isAfter(entrada) || entrada.isBefore(LocalDate.now())) {
 
-			throw new ReservaException(CodigoError.DATOS_INVALIDOS, "Las fechas no son validas");
+			throw new ReservaException(CodigoError.DATOS_INVALIDOS, "Fechas de reserva invalidas");
 		}
 	}
 
-	private Habitacion buscarHabitacion(Long id) {
+	private Habitacion obtenerHabitacion(Long id) {
 		return habitacionRepository.findById(id)
 				.orElseThrow(() -> new ReservaException(CodigoError.NO_ENCONTRADO, "Habitacion no encontrada"));
 	}
 
-	private Usuario buscarUsuario(Long id) {
-		return usuarioRepository.findById(id)
-				.orElseThrow(() -> new ReservaException(CodigoError.NO_ENCONTRADO, "Usuario no encontrado"));
+	private Habitacion bloquearHabitacion(Long id) {
+		return habitacionRepository.bloquearPorId(id)
+				.orElseThrow(() -> new ReservaException(CodigoError.NO_ENCONTRADO, "Habitacion no encontrada"));
 	}
 
-	private Reserva buscarReserva(Long id) {
+	private Reserva obtenerReserva(Long id) {
 		return reservaRepository.findById(id)
 				.orElseThrow(() -> new ReservaException(CodigoError.NO_ENCONTRADO, "Reserva no encontrada"));
 	}
 
-	private boolean hayConflicto(Long habitacionId, LocalDate entrada, LocalDate salida, Long excluirId) {
+	private Usuario obtenerUsuario(Long id) {
+		return usuarioRepository.findById(id)
+				.orElseThrow(() -> new ReservaException(CodigoError.NO_ENCONTRADO, "Usuario no encontrado"));
+	}
+
+	private boolean existeConflicto(Long habitacionId, LocalDate entrada, LocalDate salida, Long excluirReservaId) {
 
 		return reservaRepository.contarSolapamientos(habitacionId, entrada, salida, EstadoReserva.CONFIRMADA,
-				excluirId) > 0;
+				excluirReservaId) > 0;
 	}
+
+	private void verificarPropietario(Reserva reserva, Long usuarioId) {
+
+		if (!reserva.getUsuario().getId().equals(usuarioId)) {
+			throw new ReservaException(CodigoError.ACCESO_DENEGADO, "No tienes permisos sobre esta reserva");
+		}
+	}
+
+	// HU01 - CONSULTAR DISPONIBILIDAD
 
 	@Transactional(readOnly = true)
 	public boolean consultarDisponibilidad(Long habitacionId, LocalDate entrada, LocalDate salida) {
 
 		validarFechas(entrada, salida);
-		buscarHabitacion(habitacionId);
+		obtenerHabitacion(habitacionId);
 
-		return !hayConflicto(habitacionId, entrada, salida, null);
+		return !existeConflicto(habitacionId, entrada, salida, null);
 	}
 
 	@Transactional(readOnly = true)
@@ -64,8 +80,10 @@ public class ReservaService {
 		validarFechas(entrada, salida);
 
 		return habitacionRepository.findAllByOrderByNumeroAsc().stream()
-				.filter(h -> !hayConflicto(h.getId(), entrada, salida, null)).toList();
+				.filter(h -> !existeConflicto(h.getId(), entrada, salida, null)).toList();
 	}
+
+	// HU04 - CREAR RESERVA
 
 	@Transactional
 	public Reserva crearReserva(Long usuarioId, Long habitacionId, LocalDate entrada, LocalDate salida,
@@ -73,80 +91,95 @@ public class ReservaService {
 
 		validarFechas(entrada, salida);
 
-		Habitacion habitacion = habitacionRepository.bloquearPorId(habitacionId)
-				.orElseThrow(() -> new ReservaException(CodigoError.NO_ENCONTRADO, "Habitacion no encontrada"));
+		Habitacion habitacion = bloquearHabitacion(habitacionId);
 
-		Usuario usuario = buscarUsuario(usuarioId);
+		Usuario usuario = obtenerUsuario(usuarioId);
 
-		if (hayConflicto(habitacionId, entrada, salida, null)) {
+		if (existeConflicto(habitacionId, entrada, salida, null)) {
 
-			throw new ReservaException(CodigoError.CONFLICTO, "Habitacion ocupada en esas fechas");
+			throw new ReservaException(CodigoError.CONFLICTO, "La habitacion esta ocupada en esas fechas");
 		}
 
 		Reserva reserva = new Reserva(usuario, habitacion, entrada, salida, camaSupletoria, peticiones);
 
-		return reservaRepository.save(reserva);
+		return reservaRepository.saveAndFlush(reserva);
 	}
+
+	// HU05 - MIS RESERVAS
 
 	@Transactional(readOnly = true)
 	public List<Reserva> listarReservasCliente(Long usuarioId) {
 
+		obtenerUsuario(usuarioId);
+
 		return reservaRepository.findByUsuarioIdOrderByFechaEntradaDesc(usuarioId);
 	}
+
+	// MODIFICAR FECHAS
 
 	@Transactional
 	public Reserva modificarReserva(Long reservaId, Long usuarioId, LocalDate entrada, LocalDate salida) {
 
 		validarFechas(entrada, salida);
 
-		Reserva reserva = buscarReserva(reservaId);
+		Reserva reserva = obtenerReserva(reservaId);
 
-		if (!reserva.getUsuario().getId().equals(usuarioId)) {
-
-			throw new ReservaException(CodigoError.ACCESO_DENEGADO, "No puedes modificar esta reserva");
-		}
+		verificarPropietario(reserva, usuarioId);
 
 		Long habitacionId = reserva.getHabitacion().getId();
 
-		habitacionRepository.bloquearPorId(habitacionId)
-				.orElseThrow(() -> new ReservaException(CodigoError.NO_ENCONTRADO, "Habitacion no encontrada"));
+		bloquearHabitacion(habitacionId);
+
+		// Leer de nuevo tras obtener el bloqueo
+		reserva = obtenerReserva(reservaId);
+
+		verificarPropietario(reserva, usuarioId);
 
 		if (reserva.getEstado() == EstadoReserva.CANCELADA) {
-			throw new ReservaException(CodigoError.CONFLICTO, "La reserva esta cancelada");
+			throw new ReservaException(CodigoError.CONFLICTO, "No se puede modificar una reserva cancelada");
 		}
 
-		if (hayConflicto(habitacionId, entrada, salida, reservaId)) {
+		if (existeConflicto(habitacionId, entrada, salida, reservaId)) {
 
-			throw new ReservaException(CodigoError.CONFLICTO, "Habitacion ocupada en las nuevas fechas");
+			throw new ReservaException(CodigoError.CONFLICTO, "No hay disponibilidad en las nuevas fechas");
 		}
 
 		reserva.setFechaEntrada(entrada);
 		reserva.setFechaSalida(salida);
 		reserva.setPrecioTotal(reserva.calcularTotal());
 
-		return reservaRepository.save(reserva);
+		return reservaRepository.saveAndFlush(reserva);
 	}
+
+	// HU06 - CANCELAR RESERVA
 
 	@Transactional
 	public void cancelarReserva(Long reservaId, Long usuarioId) {
 
-		Reserva reserva = buscarReserva(reservaId);
+		Reserva reserva = obtenerReserva(reservaId);
 
-		if (!reserva.getUsuario().getId().equals(usuarioId)) {
+		verificarPropietario(reserva, usuarioId);
 
-			throw new ReservaException(CodigoError.ACCESO_DENEGADO, "No puedes cancelar esta reserva");
-		}
+		Long habitacionId = reserva.getHabitacion().getId();
+
+		bloquearHabitacion(habitacionId);
+
+		reserva = obtenerReserva(reservaId);
+
+		verificarPropietario(reserva, usuarioId);
 
 		if (reserva.getEstado() == EstadoReserva.CANCELADA) {
 			throw new ReservaException(CodigoError.CONFLICTO, "La reserva ya esta cancelada");
 		}
 
 		reserva.cancelar();
-		reservaRepository.save(reserva);
+		reservaRepository.saveAndFlush(reserva);
 	}
 
+	// HU08 - ADMINISTRADOR
+
 	@Transactional(readOnly = true)
-	public List<Reserva> listarTodas() {
+	public List<Reserva> listarTodasReservas() {
 		return reservaRepository.findAll();
 	}
 }

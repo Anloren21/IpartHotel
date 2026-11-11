@@ -10,7 +10,6 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import com.iparhotel.entidades.Habitacion;
-
 import jakarta.persistence.LockModeType;
 
 public interface HabitacionRepository extends JpaRepository<Habitacion, Long> {
