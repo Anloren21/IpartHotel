@@ -20,8 +20,6 @@ public class ReservaService {
 	private final HabitacionRepository habitacionRepository;
 	private final UsuarioRepository usuarioRepository;
 
-	// VALIDACIONES
-
 	private void validarFechas(LocalDate entrada, LocalDate salida) {
 
 		if (entrada == null || salida == null || !salida.isAfter(entrada) || entrada.isBefore(LocalDate.now())) {
@@ -83,8 +81,6 @@ public class ReservaService {
 				.filter(h -> !existeConflicto(h.getId(), entrada, salida, null)).toList();
 	}
 
-	// HU04 - CREAR RESERVA
-
 	@Transactional
 	public Reserva crearReserva(Long usuarioId, Long habitacionId, LocalDate entrada, LocalDate salida,
 			boolean camaSupletoria, String peticiones) {
@@ -114,8 +110,6 @@ public class ReservaService {
 
 		return reservaRepository.findByUsuarioIdOrderByFechaEntradaDesc(usuarioId);
 	}
-
-	// MODIFICAR FECHAS
 
 	@Transactional
 	public Reserva modificarReserva(Long reservaId, Long usuarioId, LocalDate entrada, LocalDate salida) {
@@ -176,10 +170,31 @@ public class ReservaService {
 		reservaRepository.saveAndFlush(reserva);
 	}
 
-	// HU08 - ADMINISTRADOR
-
 	@Transactional(readOnly = true)
 	public List<Reserva> listarTodasReservas() {
 		return reservaRepository.findAll();
 	}
+
+	@Transactional
+	public Reserva crearReservaAdministrativa(Long clienteId, Long habitacionId, LocalDate entrada, LocalDate salida,
+			boolean camaSupletoria, String peticiones) {
+
+		return crearReserva(clienteId, habitacionId, entrada, salida, camaSupletoria, peticiones);
+	}
+
+	@Transactional
+	public void cancelarReservaAdministrativa(Long reservaId) {
+
+		Reserva reserva = obtenerReserva(reservaId);
+
+		bloquearHabitacion(reserva.getHabitacion().getId());
+
+		if (reserva.getEstado() == EstadoReserva.CANCELADA) {
+			throw new ReservaException(CodigoError.CONFLICTO, "La reserva ya esta cancelada");
+		}
+
+		reserva.cancelar();
+		reservaRepository.saveAndFlush(reserva);
+	}
+
 }
